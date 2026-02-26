@@ -1,0 +1,12 @@
+{
+    "name": "fullpage-obsidian-extension",
+    "version": "1.0.0",
+    "private": true,
+    "scripts": {
+        "build": "tsc"
+    },
+    "devDependencies": {
+        "typescript": "^5.3.3",
+        "@types/chrome": "^0.0.257"
+    }
+}
