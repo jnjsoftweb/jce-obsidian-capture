@@ -1,20 +1,12 @@
 {
-    "compilerOptions": {
-        "target": "ES2020",
-        "module": "ESNext",
-        "lib": [
-            "DOM",
-            "ES2020"
-        ],
-        "outDir": "dist",
-        "rootDir": "src",
-        "strict": true,
-        "moduleResolution": "Bundler",
-        "types": [
-            "chrome"
-        ]
-    },
-    "include": [
-        "src"
-    ]
+  "compilerOptions": {
+    "target": "ES2020",
+    "module": "ESNext",
+    "lib": ["DOM", "ES2020"],
+    "outDir": "dist",
+    "rootDir": "src",
+    "strict": true,
+    "types": ["chrome"]
+  },
+  "include": ["src"]
 }
