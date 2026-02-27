@@ -1,100 +1,165 @@
 // background.ts (Manifest v3 service worker)
 
-import { getHandle } from "./db";
+const OFFSCREEN_URL = "src/offscreen/offscreen.html";
 
-/**
- * 메시지 리스너
- */
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg.type === "CAPTURE_VISIBLE") {
-    captureVisible(msg.format)
+    // content script에서 온 경우 sender.tab?.windowId 사용
+    // → captureVisibleTab(undefined) 은 SW에서 잘못된 윈도우를 참조할 수 있음
+    const windowId = sender.tab?.windowId;
+    captureVisible(msg.format || "png", windowId)
       .then((dataUrl) => sendResponse({ dataUrl }))
       .catch((err) => {
-        console.error("Background error:", err);
+        console.error("Background capture error:", err);
         sendResponse({ error: String(err) });
       });
+    return true;
+  }
 
+  if (msg.type === "ACTIVATE_ELEMENT_PICKER") {
+    activateElementPicker()
+      .catch((err) => console.error("Picker error:", err));
+    sendResponse(true);
+    return true;
+  }
+
+  if (msg.type === "SAVE_SCROLL_CAPTURE") {
+    handleSaveScrollCapture(msg.dataUrl, sendResponse)
+      .catch((err) => {
+        console.error("SAVE_SCROLL_CAPTURE error:", err);
+        sendResponse({ noVault: true });
+      });
+    return true;
+  }
+
+  if (msg.type === "PICKER_DONE") {
+    if (!msg.success && !msg.cancelled) {
+      chrome.action.setBadgeText({ text: "ERR" });
+      chrome.action.setBadgeBackgroundColor({ color: "#FF0000" });
+      setTimeout(() => chrome.action.setBadgeText({ text: "" }), 3000);
+    } else if (!msg.success && msg.cancelled) {
+      chrome.action.setBadgeText({ text: "" });
+    }
+    sendResponse(true);
     return true;
   }
 });
 
 async function captureVisible(
-  format: "png" | "jpeg" | "webp"
+  format: "png" | "jpeg" | "webp",
+  windowId?: number
 ): Promise<string> {
-  const dataUrl = await chrome.tabs.captureVisibleTab(undefined, {
-    format,
-  });
-
-  return dataUrl;
+  return chrome.tabs.captureVisibleTab(windowId, { format });
 }
 
 /**
- * 현재 활성 탭을 캡처하고
- * 선택된 Vault 폴더에 직접 저장
+ * 내부 스크롤 캡처: 콘텐츠 스크립트에 피커 모드 시작 요청
  */
-async function captureAndSave(): Promise<void> {
-  // 1️⃣ 활성 탭 조회
+async function activateElementPicker(): Promise<void> {
   const [tab] = await chrome.tabs.query({
     active: true,
     currentWindow: true,
   });
 
-  if (!tab?.id || !tab.url) {
-    throw new Error("No active tab found.");
+  if (!tab?.id) return;
+
+  chrome.action.setBadgeText({ text: "..." });
+  chrome.action.setBadgeBackgroundColor({ color: "#0078FF" });
+
+  try {
+    await chrome.tabs.sendMessage(tab.id, { type: "START_PICKER" });
+  } catch {
+    // 콘텐츠 스크립트 미로드 시 동적 주입
+    try {
+      const manifest = chrome.runtime.getManifest();
+      const files = manifest.content_scripts?.[0]?.js;
+      if (files?.length) {
+        await chrome.scripting.executeScript({
+          target: { tabId: tab.id },
+          files,
+        });
+        await new Promise((r) => setTimeout(r, 150));
+        await chrome.tabs.sendMessage(tab.id, { type: "START_PICKER" });
+      }
+    } catch (err) {
+      console.error("Cannot start picker:", err);
+      chrome.action.setBadgeText({ text: "ERR" });
+      setTimeout(() => chrome.action.setBadgeText({ text: "" }), 3000);
+    }
+  }
+}
+
+/**
+ * 내부 스크롤 캡처 저장: offscreen document를 통해 File System Access API로 저장
+ */
+async function handleSaveScrollCapture(
+  dataUrl: string,
+  sendResponse: (response: unknown) => void
+): Promise<void> {
+  const data = await chrome.storage.local.get([
+    "vaultName",
+    "vaultSubFolder",
+    "imageFormat",
+  ]);
+
+  if (!data.vaultName) {
+    sendResponse({ noVault: true });
+    return;
   }
 
-  // 2️⃣ 설정 불러오기
-  const { imageFormat } = await chrome.storage.local.get("imageFormat");
-  const format: "png" | "jpeg" | "webp" = imageFormat || "png";
+  const format: string = data.imageFormat || "png";
+  const subFolder: string = data.vaultSubFolder || "";
 
-  // 3️⃣ Vault 핸들 가져오기 (IndexedDB)
-  const vaultHandle = await getHandle();
+  try {
+    const result = await saveScrollCaptureViaOffscreen(dataUrl, format, subFolder);
 
-  if (!vaultHandle) {
-    throw new Error("Vault 폴더를 먼저 선택하세요 (옵션에서 설정).");
+    if (result?.ok) {
+      chrome.action.setBadgeText({ text: "OK!" });
+      chrome.action.setBadgeBackgroundColor({ color: "#00AA44" });
+      setTimeout(() => chrome.action.setBadgeText({ text: "" }), 3000);
+      sendResponse({ ok: true });
+    } else {
+      sendResponse({ noVault: true });
+    }
+  } catch (err) {
+    console.error("offscreen save failed:", err);
+    sendResponse({ noVault: true });
   }
+}
 
-  // 4️⃣ 현재 화면 캡처
-  const dataUrl = await chrome.tabs.captureVisibleTab(undefined, {
-    format,
+async function saveScrollCaptureViaOffscreen(
+  dataUrl: string,
+  format: string,
+  subFolder: string
+): Promise<{ ok?: boolean; noVault?: boolean; error?: string }> {
+  await ensureOffscreenDocument();
+
+  return new Promise((resolve) => {
+    chrome.runtime.sendMessage(
+      {
+        target: "offscreen",
+        type: "SAVE_SCROLL_CAPTURE",
+        dataUrl,
+        format,
+        subFolder,
+      },
+      (response) => {
+        resolve(response || { noVault: true });
+      }
+    );
   });
+}
 
-  // dataURL → Blob 변환
-  const blob = await (await fetch(dataUrl)).blob();
-
-  // 5️⃣ 날짜 기반 폴더 생성 (YYYY-MM)
-  const now = new Date();
-  const monthFolder = `${now.getFullYear()}-${String(
-    now.getMonth() + 1
-  ).padStart(2, "0")}`;
-
-  // Vault/WebCaptures/YYYY-MM
-  const webCapturesDir =
-    await vaultHandle.getDirectoryHandle("WebCaptures", {
-      create: true,
+async function ensureOffscreenDocument(): Promise<void> {
+  const existing = await chrome.offscreen.hasDocument();
+  if (!existing) {
+    await chrome.offscreen.createDocument({
+      url: OFFSCREEN_URL,
+      reasons: [chrome.offscreen.Reason.BLOBS],
+      justification: "Save captured image to vault via File System Access API",
     });
-
-  const monthDir =
-    await webCapturesDir.getDirectoryHandle(monthFolder, {
-      create: true,
-    });
-
-  // 6️⃣ 파일 이름 생성
-  const hostname = new URL(tab.url).hostname;
-  const timestamp = now.toISOString().replace(/[:.]/g, "-");
-
-  const extension = format === "jpeg" ? "jpg" : format;
-
-  const fileName = `${hostname}-${timestamp}.${extension}`;
-
-  // 7️⃣ 파일 생성
-  const fileHandle =
-    await monthDir.getFileHandle(fileName, {
-      create: true,
-    });
-
-  const writable = await fileHandle.createWritable();
-
-  await writable.write(blob);
-  await writable.close();
+    // createDocument는 HTML 파싱 완료 전에 resolve될 수 있으므로
+    // offscreen 스크립트의 onMessage 리스너가 등록될 때까지 짧게 대기
+    await new Promise((r) => setTimeout(r, 200));
+  }
 }

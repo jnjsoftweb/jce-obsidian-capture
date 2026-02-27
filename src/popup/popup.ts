@@ -1,6 +1,12 @@
+import { getHandle } from "../db";
+
 document.addEventListener("DOMContentLoaded", () => {
   const captureBtn = document.getElementById(
     "captureBtn"
+  ) as HTMLButtonElement;
+
+  const innerScrollBtn = document.getElementById(
+    "innerScrollBtn"
   ) as HTMLButtonElement;
 
   const openOptionsBtn = document.getElementById(
@@ -11,7 +17,7 @@ document.addEventListener("DOMContentLoaded", () => {
     "status"
   ) as HTMLParagraphElement;
 
-  if (!captureBtn || !statusText || !openOptionsBtn) {
+  if (!captureBtn || !statusText || !openOptionsBtn || !innerScrollBtn) {
     console.error("Popup elements not found.");
     return;
   }
@@ -20,6 +26,7 @@ document.addEventListener("DOMContentLoaded", () => {
     chrome.runtime.openOptionsPage();
   });
 
+  // ── 현재 화면 캡처 ──────────────────────────────
   captureBtn.addEventListener("click", async () => {
     try {
       statusText.textContent = "캡처 중...";
@@ -27,12 +34,33 @@ document.addEventListener("DOMContentLoaded", () => {
       const data = await chrome.storage.local.get([
         "imageFormat",
         "useScroll",
+        "vaultName",
+        "vaultSubFolder",
       ]);
 
-      const format: "png" | "jpeg" | "webp" =
-        data.imageFormat || "png";
+      const format: "png" | "jpeg" | "webp" = data.imageFormat || "png";
       const useScroll: boolean = data.useScroll !== false; // 기본값 true
+      const vaultName: string = data.vaultName || "";
+      const subFolder: string = data.vaultSubFolder || "";
 
+      // vault handle 확보 (user gesture가 살아있는 시점)
+      let vaultHandle: FileSystemDirectoryHandle | null = null;
+      if (vaultName) {
+        const handle = await getHandle();
+        if (handle) {
+          const perm = await handle.queryPermission({ mode: "readwrite" });
+          if (perm === "granted") {
+            vaultHandle = handle;
+          } else if (perm === "prompt") {
+            const newPerm = await handle.requestPermission({ mode: "readwrite" });
+            if (newPerm === "granted") {
+              vaultHandle = handle;
+            }
+          }
+        }
+      }
+
+      // 캡처
       let dataUrl: string;
 
       if (useScroll) {
@@ -52,8 +80,14 @@ document.addEventListener("DOMContentLoaded", () => {
         dataUrl = response.dataUrl;
       }
 
-      const vaultHandle = await window.showDirectoryPicker();
-      await saveToVault(vaultHandle, dataUrl, format);
+      // 저장
+      if (vaultHandle) {
+        await saveToVaultHandle(vaultHandle, dataUrl, format, subFolder);
+      } else {
+        // fallback: 폴더 직접 선택
+        const dirHandle = await window.showDirectoryPicker({ mode: "readwrite" });
+        await saveToVaultHandle(dirHandle, dataUrl, format, subFolder);
+      }
 
       statusText.textContent = "저장 완료!";
     } catch (err) {
@@ -61,12 +95,18 @@ document.addEventListener("DOMContentLoaded", () => {
       statusText.textContent = "오류 발생";
     }
   });
+
+  // ── 내부 스크롤 캡처 ────────────────────────────
+  // element picker를 활성화하고 팝업을 닫습니다.
+  // 캡처 완료 후 저장은 content script에서 자동 저장 시도 후 필요 시 토스트로 처리합니다.
+  innerScrollBtn.addEventListener("click", () => {
+    chrome.runtime.sendMessage({ type: "ACTIVATE_ELEMENT_PICKER" });
+    window.close();
+  });
 });
 
-/**
- * 스크롤을 이용해 전체 페이지를 캡처하고 하나의 이미지로 합칩니다.
- * chrome.scripting.executeScript를 사용해 콘텐츠 스크립트 주입 여부에 무관하게 동작합니다.
- */
+// ── 전체 페이지 스크롤 캡처 ──────────────────────
+
 async function captureFullPage(
   format: "png" | "jpeg" | "webp"
 ): Promise<string> {
@@ -77,7 +117,6 @@ async function captureFullPage(
 
   if (!tab?.id) throw new Error("No active tab");
 
-  // 페이지 크기 정보 + devicePixelRatio 가져오기
   const [pageInfoResult] = await chrome.scripting.executeScript({
     target: { tabId: tab.id },
     func: () => ({
@@ -96,7 +135,6 @@ async function captureFullPage(
       dpr: number;
     };
 
-  // 캔버스는 물리 픽셀 기준으로 생성 (dpr 적용)
   const canvas = document.createElement("canvas");
   canvas.width = Math.round(viewportWidth * dpr);
   canvas.height = Math.round(totalHeight * dpr);
@@ -105,23 +143,19 @@ async function captureFullPage(
   let scrollY = 0;
 
   while (scrollY < totalHeight) {
-    // 브라우저가 실제로 스크롤할 수 있는 최대 y 값 (음수 방지)
     const actualScrollY = Math.max(
       0,
       Math.min(scrollY, totalHeight - viewportHeight)
     );
 
-    // 스크롤 이동
     await chrome.scripting.executeScript({
       target: { tabId: tab.id },
       func: (y: number) => { window.scrollTo(0, y); },
       args: [actualScrollY],
     });
 
-    // 렌더링 대기 (느린 페이지 대응)
     await delay(300);
 
-    // 현재 화면 캡처
     const response = await chrome.runtime.sendMessage({
       type: "CAPTURE_VISIBLE",
       format,
@@ -131,31 +165,26 @@ async function captureFullPage(
 
     const img = await loadImage(response.dataUrl);
 
-    // CSS 픽셀 기준 오프셋·높이 계산
     const srcY_css = scrollY - actualScrollY;
     const drawHeight_css = Math.min(
       viewportHeight - srcY_css,
       totalHeight - scrollY
     );
 
-    // 물리 픽셀로 변환하여 drawImage
-    // → 스크린샷(img)은 물리 픽셀(CSS px × dpr) 크기이므로
-    //   소스 좌표도 반드시 물리 픽셀로 지정해야 올바른 영역이 샘플링됨
-    const pSrcY   = Math.round(srcY_css      * dpr);
-    const pDestY  = Math.round(scrollY        * dpr);
-    const pWidth  = Math.round(viewportWidth  * dpr);
-    const pH      = Math.round(drawHeight_css * dpr);
+    const pSrcY  = Math.round(srcY_css      * dpr);
+    const pDestY = Math.round(scrollY        * dpr);
+    const pWidth = Math.round(viewportWidth  * dpr);
+    const pH     = Math.round(drawHeight_css * dpr);
 
     ctx.drawImage(
       img,
-      0, pSrcY, pWidth, pH,   // 소스: 물리 픽셀
-      0, pDestY, pWidth, pH   // 대상: 물리 픽셀
+      0, pSrcY, pWidth, pH,
+      0, pDestY, pWidth, pH
     );
 
     scrollY += viewportHeight - srcY_css;
   }
 
-  // 스크롤 원위치
   await chrome.scripting.executeScript({
     target: { tabId: tab.id },
     func: () => { window.scrollTo(0, 0); },
@@ -168,6 +197,8 @@ async function captureFullPage(
 
   return canvas.toDataURL(mimeType);
 }
+
+// ── 유틸 ─────────────────────────────────────────
 
 function loadImage(src: string): Promise<HTMLImageElement> {
   return new Promise((resolve, reject) => {
@@ -182,46 +213,77 @@ function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-async function saveToVault(
+/**
+ * vault handle에 이미지를 저장합니다.
+ * subFolder 지정 시 해당 경로에 저장, 미지정 시 WebCaptures/YYYY-MM 에 저장합니다.
+ */
+async function saveToVaultHandle(
   vaultHandle: FileSystemDirectoryHandle,
   dataUrl: string,
-  format: string
-) {
-  const blob = await (await fetch(dataUrl)).blob();
+  format: string,
+  subFolder: string
+): Promise<void> {
+  // fetch 대신 atob 기반 변환: 대용량 data URL에서의 fetch 실패 방지
+  const blob = dataUrlToBlob(dataUrl);
+  if (blob.size === 0) {
+    throw new Error("EMPTY_BLOB: data URL produced an empty blob");
+  }
 
   const now = new Date();
+  const ext = format === "jpeg" ? "jpg" : format;
+  const timestamp = now.toISOString().replace(/[:.]/g, "-");
+  const fileName = `capture-${timestamp}.${ext}`;
 
-  const monthFolder = `${now.getFullYear()}-${String(
-    now.getMonth() + 1
-  ).padStart(2, "0")}`;
+  let targetDir: FileSystemDirectoryHandle;
 
-  const webCapturesDir =
-    await vaultHandle.getDirectoryHandle(
-      "WebCaptures",
-      { create: true }
-    );
-
-  const monthDir =
-    await webCapturesDir.getDirectoryHandle(
-      monthFolder,
-      { create: true }
-    );
-
-  const extension =
-    format === "jpeg" ? "jpg" : format;
-
-  const fileName = `capture-${now
-    .toISOString()
-    .replace(/[:.]/g, "-")}.${extension}`;
-
-  const fileHandle =
-    await monthDir.getFileHandle(fileName, {
+  if (subFolder) {
+    const parts = subFolder.split("/").filter(Boolean);
+    let cur = vaultHandle;
+    for (const part of parts) {
+      cur = await cur.getDirectoryHandle(part, { create: true });
+    }
+    targetDir = cur;
+  } else {
+    const monthFolder = `${now.getFullYear()}-${String(
+      now.getMonth() + 1
+    ).padStart(2, "0")}`;
+    const webCapturesDir = await vaultHandle.getDirectoryHandle("WebCaptures", {
       create: true,
     });
+    targetDir = await webCapturesDir.getDirectoryHandle(monthFolder, {
+      create: true,
+    });
+  }
 
-  const writable =
-    await fileHandle.createWritable();
+  // write 실패 시 0바이트 파일이 남지 않도록 abort + 삭제 처리
+  const fileHandle = await targetDir.getFileHandle(fileName, { create: true });
+  const writable = await fileHandle.createWritable();
+  try {
+    await writable.write(blob);
+    await writable.close();
+  } catch (err) {
+    await writable.abort().catch(() => {});
+    await targetDir.removeEntry(fileName).catch(() => {});
+    throw err;
+  }
+}
 
-  await writable.write(blob);
-  await writable.close();
+function dataUrlToBlob(dataUrl: string): Blob {
+  const commaIdx = dataUrl.indexOf(",");
+  if (commaIdx === -1) return new Blob([]);
+
+  const meta = dataUrl.slice(0, commaIdx);
+  const base64 = dataUrl.slice(commaIdx + 1);
+
+  const mimeMatch = meta.match(/:(.*?);/);
+  const mime = mimeMatch ? mimeMatch[1] : "image/png";
+
+  if (!base64) return new Blob([], { type: mime });
+
+  const binaryStr = atob(base64);
+  const bytes = new Uint8Array(binaryStr.length);
+  for (let i = 0; i < binaryStr.length; i++) {
+    bytes[i] = binaryStr.charCodeAt(i);
+  }
+  return new Blob([bytes], { type: mime });
 }
