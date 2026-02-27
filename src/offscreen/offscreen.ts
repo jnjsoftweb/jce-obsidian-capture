@@ -10,7 +10,8 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   if (msg.type === "SAVE_SCROLL_CAPTURE") {
     const format: string = msg.format || "png";
     const subFolder: string = msg.subFolder || "";
-    saveToVault(msg.dataUrl, format, subFolder)
+    const dataUrls: string[] = msg.dataUrls;
+    saveToVault(dataUrls, format, subFolder)
       .then(() => sendResponse({ ok: true }))
       .catch((err) => {
         const errStr = String(err);
@@ -29,7 +30,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
 });
 
 async function saveToVault(
-  dataUrl: string,
+  dataUrls: string[],
   format: string,
   subFolder: string
 ): Promise<void> {
@@ -43,16 +44,9 @@ async function saveToVault(
     throw new Error("PERMISSION_DENIED");
   }
 
-  // fetch 대신 atob 기반 변환: 대용량 data URL에서 fetch 실패를 방지
-  const blob = dataUrlToBlob(dataUrl);
-  if (blob.size === 0) {
-    throw new Error("EMPTY_BLOB: data URL produced an empty blob");
-  }
-
   const now = new Date();
   const ext = format === "jpeg" ? "jpg" : format;
   const timestamp = now.toISOString().replace(/[:.]/g, "-");
-  const fileName = `scroll-${timestamp}.${ext}`;
 
   let targetDir: FileSystemDirectoryHandle;
 
@@ -75,16 +69,29 @@ async function saveToVault(
     });
   }
 
-  // 파일 생성 후 write 실패 시 0바이트 파일이 남지 않도록 abort + 삭제 처리
-  const fileHandle = await targetDir.getFileHandle(fileName, { create: true });
-  const writable = await fileHandle.createWritable();
-  try {
-    await writable.write(blob);
-    await writable.close();
-  } catch (err) {
-    await writable.abort().catch(() => {});
-    await targetDir.removeEntry(fileName).catch(() => {});
-    throw err;
+  const total = dataUrls.length;
+  for (let i = 0; i < total; i++) {
+    // fetch 대신 atob 기반 변환: 대용량 data URL에서 fetch 실패를 방지
+    const blob = dataUrlToBlob(dataUrls[i]);
+    if (blob.size === 0) {
+      throw new Error("EMPTY_BLOB: data URL produced an empty blob");
+    }
+
+    // 단일 파일이면 suffix 없음, 분할이면 -part1, -part2 ...
+    const suffix = total > 1 ? `-part${i + 1}` : "";
+    const fileName = `scroll-${timestamp}${suffix}.${ext}`;
+
+    // 파일 생성 후 write 실패 시 0바이트 파일이 남지 않도록 abort + 삭제 처리
+    const fileHandle = await targetDir.getFileHandle(fileName, { create: true });
+    const writable = await fileHandle.createWritable();
+    try {
+      await writable.write(blob);
+      await writable.close();
+    } catch (err) {
+      await writable.abort().catch(() => {});
+      await targetDir.removeEntry(fileName).catch(() => {});
+      throw err;
+    }
   }
 }
 

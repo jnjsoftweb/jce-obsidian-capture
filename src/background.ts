@@ -24,7 +24,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   }
 
   if (msg.type === "SAVE_SCROLL_CAPTURE") {
-    handleSaveScrollCapture(msg.dataUrl, sendResponse)
+    handleSaveScrollCapture(msg.dataUrls, sendResponse)
       .catch((err) => {
         console.error("SAVE_SCROLL_CAPTURE error:", err);
         sendResponse({ noVault: true });
@@ -93,7 +93,7 @@ async function activateElementPicker(): Promise<void> {
  * 내부 스크롤 캡처 저장: offscreen document를 통해 File System Access API로 저장
  */
 async function handleSaveScrollCapture(
-  dataUrl: string,
+  dataUrls: string[],
   sendResponse: (response: unknown) => void
 ): Promise<void> {
   const data = await chrome.storage.local.get([
@@ -111,7 +111,7 @@ async function handleSaveScrollCapture(
   const subFolder: string = data.vaultSubFolder || "";
 
   try {
-    const result = await saveScrollCaptureViaOffscreen(dataUrl, format, subFolder);
+    const result = await saveScrollCaptureViaOffscreen(dataUrls, format, subFolder);
 
     if (result?.ok) {
       chrome.action.setBadgeText({ text: "OK!" });
@@ -128,7 +128,7 @@ async function handleSaveScrollCapture(
 }
 
 async function saveScrollCaptureViaOffscreen(
-  dataUrl: string,
+  dataUrls: string[],
   format: string,
   subFolder: string
 ): Promise<{ ok?: boolean; noVault?: boolean; error?: string }> {
@@ -139,7 +139,7 @@ async function saveScrollCaptureViaOffscreen(
       {
         target: "offscreen",
         type: "SAVE_SCROLL_CAPTURE",
-        dataUrl,
+        dataUrls,
         format,
         subFolder,
       },

@@ -149,7 +149,7 @@ function activateElementPicker(): void {
     const toast = createToast("캡처 중...");
 
     try {
-      const dataUrl = await captureScrollableElement(
+      const dataUrls = await captureScrollableElement(
         scrollable as HTMLElement
       );
 
@@ -159,11 +159,12 @@ function activateElementPicker(): void {
       try {
         const result = await chrome.runtime.sendMessage({
           type: "SAVE_SCROLL_CAPTURE",
-          dataUrl,
+          dataUrls,
         });
         if (result?.ok) {
           autoSaved = true;
-          toast.textContent = "저장 완료!";
+          const count = dataUrls.length;
+          toast.textContent = count > 1 ? `저장 완료! (${count}개 파일)` : "저장 완료!";
           chrome.runtime.sendMessage({ type: "PICKER_DONE", success: true });
           setTimeout(() => toast.remove(), 2500);
         }
@@ -173,7 +174,7 @@ function activateElementPicker(): void {
 
       if (!autoSaved) {
         // vault 미설정 또는 권한 없음 → 수동 저장 토스트
-        showSaveToast(toast, dataUrl);
+        showSaveToast(toast, dataUrls);
       }
     } catch (err) {
       console.error("Inner scroll capture error:", err);
@@ -208,7 +209,7 @@ function activateElementPicker(): void {
  * 캡처 완료 후 "저장 폴더 선택" 버튼을 포함한 토스트를 표시합니다.
  * 버튼 클릭 시 user gesture가 살아있으므로 showDirectoryPicker()가 정상 동작합니다.
  */
-function showSaveToast(toast: HTMLElement, dataUrl: string): void {
+function showSaveToast(toast: HTMLElement, dataUrls: string[]): void {
   toast.textContent = "";
   toast.style.pointerEvents = "auto";
   toast.style.display = "flex";
@@ -264,8 +265,9 @@ function showSaveToast(toast: HTMLElement, dataUrl: string): void {
     toast.style.pointerEvents = "none";
 
     try {
-      await saveToDirectory(dirHandle, dataUrl);
-      toast.textContent = "저장 완료!";
+      await saveToDirectory(dirHandle, dataUrls);
+      const count = dataUrls.length;
+      toast.textContent = count > 1 ? `저장 완료! (${count}개 파일)` : "저장 완료!";
       chrome.runtime.sendMessage({ type: "PICKER_DONE", success: true });
     } catch (err) {
       console.error("Save error:", err);
@@ -291,9 +293,14 @@ function showSaveToast(toast: HTMLElement, dataUrl: string): void {
 // 이 값을 초과하면 toDataURL()이 에러 없이 "data:," (빈 결과)를 반환한다.
 const MAX_CANVAS_DIM = 16383;
 
+/**
+ * 스크롤 가능한 요소를 전체 캡처합니다.
+ * Canvas 크기 제한(16383px)을 초과하는 경우 여러 타일로 분할해 각각 저장합니다.
+ * 단일 타일이면 [dataUrl], 다중 타일이면 [part1, part2, ...] 를 반환합니다.
+ */
 async function captureScrollableElement(
   element: HTMLElement
-): Promise<string> {
+): Promise<string[]> {
   const origScrollTop = element.scrollTop;
 
   const ew = element.clientWidth;
@@ -301,19 +308,24 @@ async function captureScrollableElement(
   const eH = element.scrollHeight;
   const dpr = window.devicePixelRatio || 1;
 
-  // 캔버스가 MAX_CANVAS_DIM을 넘지 않도록 scale을 계산.
-  // 짧은 스크롤: dpr(2x) 그대로 고해상도 캡처
-  // 긴 스크롤:   1 미만으로 낮춰 전체 내용을 축소 캡처 (빈 파일 방지)
-  const effectiveDpr = Math.min(
-    dpr,
-    MAX_CANVAS_DIM / eH,
-    MAX_CANVAS_DIM / ew
-  );
+  // 타일 1개당 최대 CSS px 높이 (물리 픽셀로 변환 시 MAX_CANVAS_DIM 이하)
+  const maxCssTileHeight = Math.floor(MAX_CANVAS_DIM / dpr);
+  const numTiles = Math.ceil(eH / maxCssTileHeight);
 
-  const canvas = document.createElement("canvas");
-  canvas.width  = Math.min(Math.round(ew * effectiveDpr), MAX_CANVAS_DIM);
-  canvas.height = Math.min(Math.round(eH * effectiveDpr), MAX_CANVAS_DIM);
-  const ctx = canvas.getContext("2d")!;
+  // 타일 경계 (CSS px)
+  const tileBoundaries = Array.from({ length: numTiles }, (_, i) => ({
+    start: i * maxCssTileHeight,
+    end: Math.min((i + 1) * maxCssTileHeight, eH),
+  }));
+
+  // 타일별 캔버스 생성
+  const canvases = tileBoundaries.map(({ start, end }) => {
+    const canvas = document.createElement("canvas");
+    canvas.width  = Math.round(ew * dpr);
+    canvas.height = Math.round((end - start) * dpr);
+    return canvas;
+  });
+  const ctxs = canvases.map((c) => c.getContext("2d")!);
 
   let scrollTop = 0;
 
@@ -330,20 +342,35 @@ async function captureScrollableElement(
     const offsetInView = scrollTop - actualScrollTop;
     const sliceHeight = Math.min(eh - offsetInView, eH - scrollTop);
 
-    // src: 스크린샷은 물리 픽셀(dpr) 단위
-    const srcX = Math.round(rect.left * dpr);
-    const srcY = Math.round((rect.top + offsetInView) * dpr);
-    const srcW = Math.round(ew * dpr);
-    const srcH = Math.round(sliceHeight * dpr);
+    const sliceStart = scrollTop;
+    const sliceEnd   = scrollTop + sliceHeight;
 
-    // dest: 캔버스는 effectiveDpr 단위 (크기 제한 적용 시 dpr과 다를 수 있음)
-    const destY = Math.round(scrollTop * effectiveDpr);
-    const destW = Math.round(ew * effectiveDpr);
-    const destH = Math.round(sliceHeight * effectiveDpr);
+    // 이 슬라이스가 겹치는 타일에 각각 그린다
+    for (let tileIdx = 0; tileIdx < numTiles; tileIdx++) {
+      const { start: tileStart, end: tileEnd } = tileBoundaries[tileIdx];
 
-    ctx.drawImage(img, srcX, srcY, srcW, srcH, 0, destY, destW, destH);
+      const overlapStart = Math.max(sliceStart, tileStart);
+      const overlapEnd   = Math.min(sliceEnd, tileEnd);
+      if (overlapStart >= overlapEnd) continue;
 
-    scrollTop += eh - offsetInView;
+      const inSliceOffset = overlapStart - sliceStart; // 슬라이스 내 오프셋
+      const overlapHeight = overlapEnd - overlapStart;
+
+      // src: 스크린샷은 물리 픽셀(dpr) 단위
+      const srcX = Math.round(rect.left * dpr);
+      const srcY = Math.round((rect.top + offsetInView + inSliceOffset) * dpr);
+      const srcW = Math.round(ew * dpr);
+      const srcH = Math.round(overlapHeight * dpr);
+
+      // dest: 타일 캔버스 내 위치 (타일 시작을 0으로)
+      const destY = Math.round((overlapStart - tileStart) * dpr);
+      const destW = Math.round(ew * dpr);
+      const destH = Math.round(overlapHeight * dpr);
+
+      ctxs[tileIdx].drawImage(img, srcX, srcY, srcW, srcH, 0, destY, destW, destH);
+    }
+
+    scrollTop += sliceHeight;
   }
 
   element.scrollTop = origScrollTop;
@@ -355,17 +382,19 @@ async function captureScrollableElement(
     format === "webp" ? "image/webp" :
     "image/png";
 
-  const result = canvas.toDataURL(mimeType);
-
-  // toDataURL()이 빈 결과를 반환하는 경우: 캔버스 크기 초과 또는 메모리 부족
-  if (!result || result === "data:," || !result.startsWith("data:image/")) {
-    throw new Error(
-      `이미지 생성 실패 (캔버스 ${canvas.width}×${canvas.height}px). ` +
-      `스크롤 영역이 너무 길어 처리할 수 없습니다.`
-    );
+  const results: string[] = [];
+  for (const canvas of canvases) {
+    const result = canvas.toDataURL(mimeType);
+    if (!result || result === "data:," || !result.startsWith("data:image/")) {
+      throw new Error(
+        `이미지 생성 실패 (캔버스 ${canvas.width}×${canvas.height}px). ` +
+        `스크롤 영역이 너무 길어 처리할 수 없습니다.`
+      );
+    }
+    results.push(result);
   }
 
-  return result;
+  return results;
 }
 
 async function captureVisibleWithRetry(): Promise<string> {
@@ -390,24 +419,17 @@ async function captureVisibleWithRetry(): Promise<string> {
 
 async function saveToDirectory(
   dirHandle: FileSystemDirectoryHandle,
-  dataUrl: string
+  dataUrls: string[]
 ): Promise<void> {
   const { imageFormat } = await chrome.storage.local.get("imageFormat");
   const format: string = imageFormat || "png";
   const ext = format === "jpeg" ? "jpg" : format;
-
-  // fetch 대신 atob 기반 변환: 대용량 data URL 안정성 확보
-  const blob = dataUrlToBlob(dataUrl);
-  if (blob.size === 0) {
-    throw new Error("캡처 데이터가 비어있습니다.");
-  }
 
   const now = new Date();
   const monthFolder = `${now.getFullYear()}-${String(
     now.getMonth() + 1
   ).padStart(2, "0")}`;
   const timestamp = now.toISOString().replace(/[:.]/g, "-");
-  const fileName = `scroll-${timestamp}.${ext}`;
 
   const webCapturesDir = await dirHandle.getDirectoryHandle("WebCaptures", {
     create: true,
@@ -416,16 +438,28 @@ async function saveToDirectory(
     create: true,
   });
 
-  // write 실패 시 0바이트 파일이 남지 않도록 abort + 삭제
-  const fileHandle = await monthDir.getFileHandle(fileName, { create: true });
-  const writable = await fileHandle.createWritable();
-  try {
-    await writable.write(blob);
-    await writable.close();
-  } catch (err) {
-    await writable.abort().catch(() => {});
-    await monthDir.removeEntry(fileName).catch(() => {});
-    throw err;
+  const total = dataUrls.length;
+  for (let i = 0; i < total; i++) {
+    const blob = dataUrlToBlob(dataUrls[i]);
+    if (blob.size === 0) {
+      throw new Error("캡처 데이터가 비어있습니다.");
+    }
+
+    // 단일 파일이면 suffix 없음, 분할이면 -part1, -part2 ...
+    const suffix = total > 1 ? `-part${i + 1}` : "";
+    const fileName = `scroll-${timestamp}${suffix}.${ext}`;
+
+    // write 실패 시 0바이트 파일이 남지 않도록 abort + 삭제
+    const fileHandle = await monthDir.getFileHandle(fileName, { create: true });
+    const writable = await fileHandle.createWritable();
+    try {
+      await writable.write(blob);
+      await writable.close();
+    } catch (err) {
+      await writable.abort().catch(() => {});
+      await monthDir.removeEntry(fileName).catch(() => {});
+      throw err;
+    }
   }
 }
 

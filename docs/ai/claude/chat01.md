@@ -43,9 +43,7 @@ Popup error: Error: Could not establish connection. Receiving end does not exist
 src/popup/popup.html
 스택 추적
 assets/popup.html-C2QaW1XF.js:1 (익명의 함수)
-1
-2
-import"./modulepreload-polyfill-B5Qt9EMX.js";document.addEventListener("DOMContentLoaded",()=>{const n=document.getElementById("captureBtn"),e=document.getElementById("openOptions"),a=document.getElementById("status");if(!n||!a||!e){console.error("Popup elements not found.");return}e.addEventListener("click",()=>{chrome.runtime.openOptionsPage()}),n.addEventListener("click",async()=>{try{a.textContent="캡처 중...";const t=await chrome.storage.local.get(["imageFormat","useScroll"]),o=t.imageFormat||"png",s=t.useScroll!==!1;let i;if(s)a.textContent="전체 페이지 캡처 중...",i=await p(o);else{const r=await chrome.runtime.sendMessage({type:"CAPTURE_VISIBLE",format:o});if(!r?.dataUrl){a.textContent="캡처 실패";return}i=r.dataUrl}const c=await window.showDirectoryPicker();await b(c,i,o),a.textContent="저장 완료!"}catch(t){console.error("Popup error:",t),a.textContent="오류 발생"}})});async function p(n){const[e]=await chrome.tabs.query({active:!0,currentWindow:!0});if(!e?.id)throw new Error("No active tab");const a=await chrome.tabs.sendMessage(e.id,{type:"GET_PAGE_INFO"}),{totalHeight:t,viewportHeight:o,viewportWidth:s}=a,i=document.createElement("canvas");i.width=s,i.height=t;const c=i.getContext("2d");let r=0;for(;r<t;){const u=Math.min(r,t-o);await chrome.tabs.sendMessage(e.id,{type:"SCROLL_TO",y:u}),await y(200);const l=await chrome.runtime.sendMessage({type:"CAPTURE_VISIBLE",format:n});if(!l?.dataUrl)throw new Error("Capture failed");const m=await h(l.dataUrl),w=r-u,g=Math.min(o-w,t-r);c.drawImage(m,0,w,s,g,0,r,s,g),r+=o-w}await chrome.tabs.sendMessage(e.id,{type:"SCROLL_TO",y:0});const d=n==="jpeg"?"image/jpeg":n==="webp"?"image/webp":"image/png";return i.toDataURL(d)}function h(n){return new Promise((e,a)=>{const t=new Image;t.onload=()=>e(t),t.onerror=a,t.src=n})}function y(n){return new Promise(e=>setTimeout(e,n))}async function b(n,e,a){const t=await(await fetch(e)).blob(),o=new Date,s=`${o.getFullYear()}-${String(o.getMonth()+1).padStart(2,"0")}`,c=await(await n.getDirectoryHandle("WebCaptures",{create:!0})).getDirectoryHandle(s,{create:!0}),r=a==="jpeg"?"jpg":a,d=`capture-${o.toISOString().replace(/[:.]/g,"-")}.${r}`,l=await(await c.getFileHandle(d,{create:!0})).createWritable();await l.write(t),await l.close()}
+
 """
 
   원인: chrome.tabs.sendMessage는 콘텐츠 스크립트가 이미 탭에 주입되어 있어야 동작합니다. 탭을 새로 열었거나
@@ -202,9 +200,7 @@ Save error: TypeError: a.getDirectoryHandle is not a function
 assets/background.ts-BGHW7LLz.js
 스택 추적
 assets/background.ts-BGHW7LLz.js:1 (익명의 함수)
-1
-2
-import{g as u}from"./db-ChXIo_cT.js";chrome.runtime.onMessage.addListener((t,a,r)=>{if(t.type==="CAPTURE_VISIBLE"){const e=a.tab?.windowId;return d(t.format||"png",e).then(o=>r({dataUrl:o})).catch(o=>{console.error("Background capture error:",o),r({error:String(o)})}),!0}if(t.type==="ACTIVATE_ELEMENT_PICKER")return m().catch(e=>console.error("Picker error:",e)),r(!0),!0;if(t.type==="SAVE_SCROLL_CAPTURE")return g(t.dataUrl).then(()=>{chrome.action.setBadgeText({text:"OK!"}),chrome.action.setBadgeBackgroundColor({color:"#00AA00"}),setTimeout(()=>chrome.action.setBadgeText({text:""}),3e3),r({ok:!0})}).catch(e=>{console.error("Save error:",e),chrome.action.setBadgeText({text:"ERR"}),chrome.action.setBadgeBackgroundColor({color:"#FF0000"}),setTimeout(()=>chrome.action.setBadgeText({text:""}),3e3),r({error:String(e)})}),!0;if(t.type==="PICKER_DONE")return!t.success&&!t.cancelled?(chrome.action.setBadgeText({text:"ERR"}),chrome.action.setBadgeBackgroundColor({color:"#FF0000"}),setTimeout(()=>chrome.action.setBadgeText({text:""}),3e3)):!t.success&&t.cancelled&&chrome.action.setBadgeText({text:""}),r(!0),!0});async function d(t,a){return chrome.tabs.captureVisibleTab(a,{format:t})}async function m(){const[t]=await chrome.tabs.query({active:!0,currentWindow:!0});if(t?.id){chrome.action.setBadgeText({text:"..."}),chrome.action.setBadgeBackgroundColor({color:"#0078FF"});try{await chrome.tabs.sendMessage(t.id,{type:"START_PICKER"})}catch{try{const r=chrome.runtime.getManifest().content_scripts?.[0]?.js;r?.length&&(await chrome.scripting.executeScript({target:{tabId:t.id},files:r}),await new Promise(e=>setTimeout(e,150)),await chrome.tabs.sendMessage(t.id,{type:"START_PICKER"}))}catch(a){console.error("Cannot start picker:",a),chrome.action.setBadgeText({text:"ERR"}),setTimeout(()=>chrome.action.setBadgeText({text:""}),3e3)}}}}async function g(t){const a=await u();if(!a)throw new Error("Vault 폴더가 설정되지 않았습니다. 먼저 폴더를 선택해 주세요.");const r=await(await fetch(t)).blob(),e=new Date,o=`${e.getFullYear()}-${String(e.getMonth()+1).padStart(2,"0")}`,{imageFormat:n}=await chrome.storage.local.get("imageFormat"),c=n||"png",s=c==="jpeg"?"jpg":c,l=`scroll-${e.toISOString().replace(/[:.]/g,"-")}.${s}`,i=await(await(await(await a.getDirectoryHandle("WebCaptures",{create:!0})).getDirectoryHandle(o,{create:!0})).getFileHandle(l,{create:!0})).createWritable();await i.write(r),await i.close()}
+
 """
 
 
@@ -409,8 +405,9 @@ Inner scroll capture error: Error: 스크롤 영역이 너무 깁니다 (51475px
 https://aistudio.google.com/prompts/1ynSPXkTC6vpADWHz_M8hHQukkFh_Cqpg
 """
 
-  변경 요약                                                                                                     
-                                                                                                                  이전 동작: max(1, ...) 제약으로 scale이 절대 1 미만이 되지 않음 → eH=51475px에서 canvas.height = 51475 > 16383
+  변경 요약
+  
+  이전 동작: max(1, ...) 제약으로 scale이 절대 1 미만이 되지 않음 → eH=51475px에서 canvas.height = 51475 > 16383
    → throw
 
   새 동작: scale 제한 없이 MIN(dpr, 16383/eH, 16383/ew) 계산
@@ -429,4 +426,69 @@ https://aistudio.google.com/prompts/1ynSPXkTC6vpADWHz_M8hHQukkFh_Cqpg
 
   51,475px 요소는 약 31% 스케일로 전체 내용이 캡처됩니다. toDataURL() 검증은 여전히 유지되어 실패 시 의미있는   
   에러를 표시합니다.
+
+=====================
+
+"""
+긴 스크롤이어도 해상도를 축소하지 않고 저장할 수는 없나요? 파일 용량에 대한 설정을 조정할 수 없나요?
+"""
+
+  ---
+  근본 원인: 브라우저 Canvas 크기 제한
+
+  MAX_CANVAS_DIM = 16383px은 Chrome GPU 텍스처의 하드웨어 한계입니다. 단일 Canvas로는 이 이상의 이미지를 만들 수 없어서 현재 축소 방식을
+   사용하고 있습니다.
+
+  ---
+  가능한 해결책
+
+  방법 A — 분할 저장 (해상도 완전 보존)
+
+  16383px 단위로 잘라 여러 파일로 저장합니다.
+  - scroll-part1.png, scroll-part2.png, ... 형태
+  - 51,475px 스크롤 → 약 4~7개 파일 생성
+  - 해상도 손실 없음, 단 파일이 여러 개로 분리됨
+
+  방법 B — JPEG 품질 설정 추가 (파일 용량 조절)
+
+  설정에 JPEG 품질 슬라이더(1~100)를 추가합니다.
+  - 현재 이미지 포맷이 jpeg일 때만 적용
+  - 파일 용량을 줄일 수 있지만, 캔버스 크기 제한 자체는 해결하지 못함
+  - PNG는 무손실이라 품질 설정이 의미 없음
+
+  방법 C — A + B 동시 적용
+
+  분할 저장 + JPEG 품질 설정을 모두 구현
+
+---
+
+  변경 내용 요약                                                                                                                          
+  핵심 원리                                                                                                                             
+  
+  Canvas 16383px 한계를 넘으면 타일 단위로 분할해 각각 별도 파일로 저장합니다.
+
+  dpr=2, eH=51,475px 기준
+
+  ┌────────────────────────────────────────────┬────────────────────────────────────────┐
+  │                    이전                    │                  이후                  │
+  ├────────────────────────────────────────────┼────────────────────────────────────────┤
+  │ effectiveDpr = 0.318 (31% 축소) → 1개 파일 │ dpr = 2 (100% 해상도) → 7개 파일       │
+  ├────────────────────────────────────────────┼────────────────────────────────────────┤
+  │ scroll-TIMESTAMP.png (축소된 단일 파일)    │ scroll-TIMESTAMP-part1.png ~ part7.png │
+  └────────────────────────────────────────────┴────────────────────────────────────────┘
+
+  타일 분할 계산
+
+  - maxCssTileHeight = floor(16383 / dpr) — 타일 1개당 최대 CSS 높이
+  - numTiles = ceil(eH / maxCssTileHeight) — 필요한 타일 수
+  - 타일 경계를 넘치는 슬라이스는 양쪽 타일에 각각 나눠서 그림
+
+  저장 파일명
+
+  - 단일 타일(짧은 스크롤): scroll-TIMESTAMP.ext (기존과 동일)
+  - 다중 타일(긴 스크롤): scroll-TIMESTAMP-part1.ext, part2.ext, ...
+
+  빌드 후 테스트해 보시면 긴 스크롤도 원본 해상도 그대로 저장되는 것을 확인하실 수 있습니다.
+
+===========================
 
