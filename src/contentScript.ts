@@ -301,24 +301,18 @@ async function captureScrollableElement(
   const eH = element.scrollHeight;
   const dpr = window.devicePixelRatio || 1;
 
-  // 캔버스 높이가 MAX_CANVAS_DIM을 초과하지 않도록 DPR을 낮춤.
-  // dpr=2, eH=10000px → effectiveDpr=1, canvas.height=10000px (제한 이내)
-  // dpr=2, eH=5000px  → effectiveDpr=2, canvas.height=10000px (정상)
-  const effectiveDpr = Math.max(
-    1,
-    Math.min(dpr, Math.floor(MAX_CANVAS_DIM / eH))
+  // 캔버스가 MAX_CANVAS_DIM을 넘지 않도록 scale을 계산.
+  // 짧은 스크롤: dpr(2x) 그대로 고해상도 캡처
+  // 긴 스크롤:   1 미만으로 낮춰 전체 내용을 축소 캡처 (빈 파일 방지)
+  const effectiveDpr = Math.min(
+    dpr,
+    MAX_CANVAS_DIM / eH,
+    MAX_CANVAS_DIM / ew
   );
 
-  const canvasHeight = Math.round(eH * effectiveDpr);
-  if (canvasHeight > MAX_CANVAS_DIM) {
-    throw new Error(
-      `스크롤 영역이 너무 깁니다 (${eH}px). 더 짧은 영역을 선택해 주세요.`
-    );
-  }
-
   const canvas = document.createElement("canvas");
-  canvas.width = Math.round(ew * effectiveDpr);
-  canvas.height = canvasHeight;
+  canvas.width  = Math.min(Math.round(ew * effectiveDpr), MAX_CANVAS_DIM);
+  canvas.height = Math.min(Math.round(eH * effectiveDpr), MAX_CANVAS_DIM);
   const ctx = canvas.getContext("2d")!;
 
   let scrollTop = 0;
