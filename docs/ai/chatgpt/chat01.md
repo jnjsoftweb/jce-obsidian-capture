@@ -330,7 +330,7 @@ npm install
 
 ```json
 {
-  "compilerOptions": {
+  "compilersettings": {
     "target": "ES2020",
     "module": "ESNext",
     "lib": ["DOM", "ES2020"],

@@ -1,11 +1,10 @@
 {
-  "compilerOptions": {
-    "target": "ES2020",
+  "compilersettings": {
+    "target": "ESNext",
     "module": "ESNext",
-    "lib": ["DOM", "ES2020"],
-    "outDir": "dist",
-    "rootDir": "src",
+    "moduleResolution": "Bundler",
     "strict": true,
+    "jsx": "react-jsx",
     "types": ["chrome"]
   },
   "include": ["src"]
