@@ -9,6 +9,20 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
     return true; // async 허용
   }
+  if (msg.type === "GET_PAGE_INFO") {
+    sendResponse({
+      totalHeight: document.documentElement.scrollHeight,
+      viewportHeight: window.innerHeight,
+      viewportWidth: window.innerWidth,
+    });
+  }
+
+  if (msg.type === "SCROLL_TO") {
+    window.scrollTo(0, msg.y);
+    sendResponse(true);
+  }
+
+  return true;
 });
 
 async function startCapture(): Promise<{ fileName: string }> {
