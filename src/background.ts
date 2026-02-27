@@ -1,79 +1,100 @@
-// background.ts (MV3 service worker)
+// background.ts (Manifest v3 service worker)
 
+import { getHandle } from "./db";
+
+/**
+ * 메시지 리스너
+ */
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
-  handleMessage(msg)
-    .then((res) => sendResponse(res))
-    .catch((err) => {
-      console.error("Background error:", err);
-      sendResponse({ error: String(err) });
-    });
+  if (msg.type === "CAPTURE_VISIBLE") {
+    captureVisible(msg.format)
+      .then((dataUrl) => sendResponse({ dataUrl }))
+      .catch((err) => {
+        console.error("Background error:", err);
+        sendResponse({ error: String(err) });
+      });
 
-  return true; // async response 허용
+    return true;
+  }
 });
 
-async function handleMessage(msg: any): Promise<any> {
-  switch (msg.type) {
-    case "CAPTURE_FULL_PAGE":
-      return await handleFullCapture();
+async function captureVisible(
+  format: "png" | "jpeg" | "webp"
+): Promise<string> {
+  const dataUrl = await chrome.tabs.captureVisibleTab(undefined, {
+    format,
+  });
 
-    case "CAPTURE_VISIBLE":
-      return await captureVisible();
-
-    case "SAVE_DATA_URL":
-      return await saveDataUrl(msg.dataUrl, msg.fileName);
-
-    default:
-      return null;
-  }
+  return dataUrl;
 }
 
 /**
- * popup → background
- * 현재 활성 탭에 START_CAPTURE 전달
+ * 현재 활성 탭을 캡처하고
+ * 선택된 Vault 폴더에 직접 저장
  */
-async function handleFullCapture() {
+async function captureAndSave(): Promise<void> {
+  // 1️⃣ 활성 탭 조회
   const [tab] = await chrome.tabs.query({
     active: true,
     currentWindow: true,
   });
 
-  if (!tab?.id) {
-    throw new Error("No active tab found");
+  if (!tab?.id || !tab.url) {
+    throw new Error("No active tab found.");
   }
 
-  try {
-    return await chrome.tabs.sendMessage(tab.id, {
-      type: "START_CAPTURE",
-    });
-  } catch (err) {
-    throw new Error(
-      "Content script not loaded. Refresh the page and try again."
-    );
-  }
-}
+  // 2️⃣ 설정 불러오기
+  const { imageFormat } = await chrome.storage.local.get("imageFormat");
+  const format: "png" | "jpeg" | "webp" = imageFormat || "png";
 
-/**
- * contentScript → background
- * 현재 보이는 화면 캡처
- */
-async function captureVisible(): Promise<{ dataUrl: string }> {
+  // 3️⃣ Vault 핸들 가져오기 (IndexedDB)
+  const vaultHandle = await getHandle();
+
+  if (!vaultHandle) {
+    throw new Error("Vault 폴더를 먼저 선택하세요 (옵션에서 설정).");
+  }
+
+  // 4️⃣ 현재 화면 캡처
   const dataUrl = await chrome.tabs.captureVisibleTab(undefined, {
-    format: "png",
+    format,
   });
 
-  return { dataUrl };
-}
+  // dataURL → Blob 변환
+  const blob = await (await fetch(dataUrl)).blob();
 
-/**
- * contentScript → background
- * 다운로드 폴더에 저장
- */
-async function saveDataUrl(dataUrl: string, fileName: string) {
-  await chrome.downloads.download({
-    url: dataUrl,
-    filename: `WebCaptures/${fileName}`,
-    saveAs: false,
-  });
+  // 5️⃣ 날짜 기반 폴더 생성 (YYYY-MM)
+  const now = new Date();
+  const monthFolder = `${now.getFullYear()}-${String(
+    now.getMonth() + 1
+  ).padStart(2, "0")}`;
 
-  return { success: true };
+  // Vault/WebCaptures/YYYY-MM
+  const webCapturesDir =
+    await vaultHandle.getDirectoryHandle("WebCaptures", {
+      create: true,
+    });
+
+  const monthDir =
+    await webCapturesDir.getDirectoryHandle(monthFolder, {
+      create: true,
+    });
+
+  // 6️⃣ 파일 이름 생성
+  const hostname = new URL(tab.url).hostname;
+  const timestamp = now.toISOString().replace(/[:.]/g, "-");
+
+  const extension = format === "jpeg" ? "jpg" : format;
+
+  const fileName = `${hostname}-${timestamp}.${extension}`;
+
+  // 7️⃣ 파일 생성
+  const fileHandle =
+    await monthDir.getFileHandle(fileName, {
+      create: true,
+    });
+
+  const writable = await fileHandle.createWritable();
+
+  await writable.write(blob);
+  await writable.close();
 }

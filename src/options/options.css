@@ -1,0 +1,9 @@
+body {
+  font-family:
+    "Apple SD Gothic Neo",
+    "Noto Sans KR",
+    system-ui,
+    sans-serif;
+  padding: 24px;
+  max-width: 600px;
+}

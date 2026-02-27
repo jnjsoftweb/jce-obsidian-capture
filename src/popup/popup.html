@@ -1,14 +1,19 @@
 <!DOCTYPE html>
-<html>
-  <body>
-    <h2>Full Page Capture</h2>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <link rel="stylesheet" href="popup.css" />
+</head>
+<body>
+  <div class="container">
+    <h1>Web Capture</h1>
 
-    <button id="capture">Capture Full Page</button>
-    <div id="status"></div>
+    <button id="captureBtn">현재 화면 캡처</button>
+    <button id="openOptions">설정 열기</button>
 
-    <br />
-    <a href="../options/options.html">⚙ options</a>
+    <p id="status"></p>
+  </div>
 
-    <script type="module" src="./popup.ts"></script>
-  </body>
+  <script type="module" src="./popup.ts"></script>
+</body>
 </html>
