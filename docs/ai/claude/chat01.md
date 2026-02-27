@@ -67,4 +67,22 @@ import"./modulepreload-polyfill-B5Qt9EMX.js";document.addEventListener("DOMConte
 ==========================
 
 """
+스크롤 기능이 구현되었어요. 고마워요.
+그런데, 스크롤을 하는 경우 페이지의 하단 부분이 캡쳐되지 않는 경우가 있고,
+캡쳐시에 전체 화면이 아니라 좌측 상단 부분만 캡쳐되기도 합니다.
 """
+
+  버그 1: 좌측 상단만 캡처되는 문제 (dpr 미적용)                                                                
+captureVisibleTab이 반환하는 스크린샷은 물리 픽셀 크기 (CSS px × devicePixelRatio)입니다. dpr=2인 모니터에서는   이미지가 뷰포트의 2배 크기입니다.
+
+  기존 코드는 소스 좌표를 CSS 픽셀로 지정했기 때문에, 실제 이미지의 좌측 상단 1/4(dpr=2의 경우)만
+  샘플링됐습니다.
+
+  - 캔버스: viewportWidth * dpr, totalHeight * dpr (물리 픽셀)
+  - drawImage 소스 좌표: 모두 × dpr 변환 후 지정
+
+  버그 2: 하단 미캡처
+
+  - Math.min(scrollY, totalHeight - viewportHeight) → 페이지가 뷰포트보다 짧을 때 음수가 되는 엣지케이스를      
+  Math.max(0, ...) 로 방지
+  - 렌더링 대기 시간 200ms → 300ms 로 증가 (느린 페이지에서 스크롤 후 렌더링이 덜 된 상태로 캡처되던 문제 대응) 

@@ -77,34 +77,39 @@ async function captureFullPage(
 
   if (!tab?.id) throw new Error("No active tab");
 
-  // 페이지 크기 정보 가져오기
+  // 페이지 크기 정보 + devicePixelRatio 가져오기
   const [pageInfoResult] = await chrome.scripting.executeScript({
     target: { tabId: tab.id },
     func: () => ({
       totalHeight: document.documentElement.scrollHeight,
       viewportHeight: window.innerHeight,
       viewportWidth: window.innerWidth,
+      dpr: window.devicePixelRatio || 1,
     }),
   });
 
-  const { totalHeight, viewportHeight, viewportWidth } =
+  const { totalHeight, viewportHeight, viewportWidth, dpr } =
     pageInfoResult.result as {
       totalHeight: number;
       viewportHeight: number;
       viewportWidth: number;
+      dpr: number;
     };
 
-  // 캔버스 생성 (전체 페이지 크기)
+  // 캔버스는 물리 픽셀 기준으로 생성 (dpr 적용)
   const canvas = document.createElement("canvas");
-  canvas.width = viewportWidth;
-  canvas.height = totalHeight;
+  canvas.width = Math.round(viewportWidth * dpr);
+  canvas.height = Math.round(totalHeight * dpr);
   const ctx = canvas.getContext("2d")!;
 
   let scrollY = 0;
 
   while (scrollY < totalHeight) {
-    // 브라우저가 실제로 스크롤할 수 있는 최대 y 값
-    const actualScrollY = Math.min(scrollY, totalHeight - viewportHeight);
+    // 브라우저가 실제로 스크롤할 수 있는 최대 y 값 (음수 방지)
+    const actualScrollY = Math.max(
+      0,
+      Math.min(scrollY, totalHeight - viewportHeight)
+    );
 
     // 스크롤 이동
     await chrome.scripting.executeScript({
@@ -113,8 +118,8 @@ async function captureFullPage(
       args: [actualScrollY],
     });
 
-    // 렌더링 대기
-    await delay(200);
+    // 렌더링 대기 (느린 페이지 대응)
+    await delay(300);
 
     // 현재 화면 캡처
     const response = await chrome.runtime.sendMessage({
@@ -126,17 +131,28 @@ async function captureFullPage(
 
     const img = await loadImage(response.dataUrl);
 
-    // 스크린샷 내 오프셋과 그릴 높이 계산
-    const srcY = scrollY - actualScrollY;
-    const drawHeight = Math.min(viewportHeight - srcY, totalHeight - scrollY);
+    // CSS 픽셀 기준 오프셋·높이 계산
+    const srcY_css = scrollY - actualScrollY;
+    const drawHeight_css = Math.min(
+      viewportHeight - srcY_css,
+      totalHeight - scrollY
+    );
+
+    // 물리 픽셀로 변환하여 drawImage
+    // → 스크린샷(img)은 물리 픽셀(CSS px × dpr) 크기이므로
+    //   소스 좌표도 반드시 물리 픽셀로 지정해야 올바른 영역이 샘플링됨
+    const pSrcY   = Math.round(srcY_css      * dpr);
+    const pDestY  = Math.round(scrollY        * dpr);
+    const pWidth  = Math.round(viewportWidth  * dpr);
+    const pH      = Math.round(drawHeight_css * dpr);
 
     ctx.drawImage(
       img,
-      0, srcY, viewportWidth, drawHeight,
-      0, scrollY, viewportWidth, drawHeight
+      0, pSrcY, pWidth, pH,   // 소스: 물리 픽셀
+      0, pDestY, pWidth, pH   // 대상: 물리 픽셀
     );
 
-    scrollY += viewportHeight - srcY;
+    scrollY += viewportHeight - srcY_css;
   }
 
   // 스크롤 원위치
