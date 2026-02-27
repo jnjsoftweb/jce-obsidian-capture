@@ -3,6 +3,7 @@ import { saveHandle } from "../db";
 const selectBtn = document.getElementById("selectFolder")!;
 const folderStatus = document.getElementById("folderStatus")!;
 const imageFormatSelect = document.getElementById("imageFormat") as HTMLSelectElement;
+const useScrollCheckbox = document.getElementById("useScroll") as HTMLInputElement;
 
 
 selectBtn.addEventListener("click", async () => {
@@ -18,10 +19,17 @@ imageFormatSelect.addEventListener("change", async () => {
   });
 });
 
+useScrollCheckbox.addEventListener("change", async () => {
+  await chrome.storage.local.set({
+    useScroll: useScrollCheckbox.checked,
+  });
+});
+
 async function loadSettings() {
   const data = await chrome.storage.local.get([
     "vaultHandle",
     "imageFormat",
+    "useScroll",
   ]);
 
   if (data.vaultHandle) {
@@ -29,6 +37,7 @@ async function loadSettings() {
   }
 
   imageFormatSelect.value = data.imageFormat || "png";
+  useScrollCheckbox.checked = data.useScroll !== false; // 기본값 true
 }
 
 loadSettings();

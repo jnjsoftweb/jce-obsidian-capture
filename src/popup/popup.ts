@@ -16,7 +16,6 @@ document.addEventListener("DOMContentLoaded", () => {
     return;
   }
 
-  // ✅ 설정 열기 버튼 수정
   openOptionsBtn.addEventListener("click", () => {
     chrome.runtime.openOptionsPage();
   });
@@ -25,33 +24,36 @@ document.addEventListener("DOMContentLoaded", () => {
     try {
       statusText.textContent = "캡처 중...";
 
-      const { imageFormat } =
-        await chrome.storage.local.get("imageFormat");
+      const data = await chrome.storage.local.get([
+        "imageFormat",
+        "useScroll",
+      ]);
 
-      const format =
-        imageFormat || "png";
+      const format: "png" | "jpeg" | "webp" =
+        data.imageFormat || "png";
+      const useScroll: boolean = data.useScroll !== false; // 기본값 true
 
-      // 1️⃣ Background에서 캡처
-      const response =
-        await chrome.runtime.sendMessage({
+      let dataUrl: string;
+
+      if (useScroll) {
+        statusText.textContent = "전체 페이지 캡처 중...";
+        dataUrl = await captureFullPage(format);
+      } else {
+        const response = await chrome.runtime.sendMessage({
           type: "CAPTURE_VISIBLE",
           format,
         });
 
-      if (!response?.dataUrl) {
-        statusText.textContent = "캡처 실패";
-        return;
+        if (!response?.dataUrl) {
+          statusText.textContent = "캡처 실패";
+          return;
+        }
+
+        dataUrl = response.dataUrl;
       }
 
-      // 🔥 2️⃣ 사용자에게 직접 폴더 선택 요청
-      const vaultHandle =
-        await window.showDirectoryPicker();
-
-      await saveToVault(
-        vaultHandle,
-        response.dataUrl,
-        format
-      );
+      const vaultHandle = await window.showDirectoryPicker();
+      await saveToVault(vaultHandle, dataUrl, format);
 
       statusText.textContent = "저장 완료!";
     } catch (err) {
@@ -60,6 +62,109 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   });
 });
+
+/**
+ * 스크롤을 이용해 전체 페이지를 캡처하고 하나의 이미지로 합칩니다.
+ * chrome.scripting.executeScript를 사용해 콘텐츠 스크립트 주입 여부에 무관하게 동작합니다.
+ */
+async function captureFullPage(
+  format: "png" | "jpeg" | "webp"
+): Promise<string> {
+  const [tab] = await chrome.tabs.query({
+    active: true,
+    currentWindow: true,
+  });
+
+  if (!tab?.id) throw new Error("No active tab");
+
+  // 페이지 크기 정보 가져오기
+  const [pageInfoResult] = await chrome.scripting.executeScript({
+    target: { tabId: tab.id },
+    func: () => ({
+      totalHeight: document.documentElement.scrollHeight,
+      viewportHeight: window.innerHeight,
+      viewportWidth: window.innerWidth,
+    }),
+  });
+
+  const { totalHeight, viewportHeight, viewportWidth } =
+    pageInfoResult.result as {
+      totalHeight: number;
+      viewportHeight: number;
+      viewportWidth: number;
+    };
+
+  // 캔버스 생성 (전체 페이지 크기)
+  const canvas = document.createElement("canvas");
+  canvas.width = viewportWidth;
+  canvas.height = totalHeight;
+  const ctx = canvas.getContext("2d")!;
+
+  let scrollY = 0;
+
+  while (scrollY < totalHeight) {
+    // 브라우저가 실제로 스크롤할 수 있는 최대 y 값
+    const actualScrollY = Math.min(scrollY, totalHeight - viewportHeight);
+
+    // 스크롤 이동
+    await chrome.scripting.executeScript({
+      target: { tabId: tab.id },
+      func: (y: number) => { window.scrollTo(0, y); },
+      args: [actualScrollY],
+    });
+
+    // 렌더링 대기
+    await delay(200);
+
+    // 현재 화면 캡처
+    const response = await chrome.runtime.sendMessage({
+      type: "CAPTURE_VISIBLE",
+      format,
+    });
+
+    if (!response?.dataUrl) throw new Error("Capture failed");
+
+    const img = await loadImage(response.dataUrl);
+
+    // 스크린샷 내 오프셋과 그릴 높이 계산
+    const srcY = scrollY - actualScrollY;
+    const drawHeight = Math.min(viewportHeight - srcY, totalHeight - scrollY);
+
+    ctx.drawImage(
+      img,
+      0, srcY, viewportWidth, drawHeight,
+      0, scrollY, viewportWidth, drawHeight
+    );
+
+    scrollY += viewportHeight - srcY;
+  }
+
+  // 스크롤 원위치
+  await chrome.scripting.executeScript({
+    target: { tabId: tab.id },
+    func: () => { window.scrollTo(0, 0); },
+  });
+
+  const mimeType =
+    format === "jpeg" ? "image/jpeg" :
+    format === "webp" ? "image/webp" :
+    "image/png";
+
+  return canvas.toDataURL(mimeType);
+}
+
+function loadImage(src: string): Promise<HTMLImageElement> {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => resolve(img);
+    img.onerror = reject;
+    img.src = src;
+  });
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
 
 async function saveToVault(
   vaultHandle: FileSystemDirectoryHandle,
